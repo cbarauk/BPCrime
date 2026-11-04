@@ -50,9 +50,6 @@ local cooldowns = exports['BPCrime']:GetMeterCooldowns()
 local cleared = exports['BPCrime']:ClearMeterCooldown(key)
 ```
 
-## Credits
-
-Created by CBaraUK.
 
 ## License
 
