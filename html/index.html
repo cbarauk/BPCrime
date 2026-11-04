@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tumbler · lockpick</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  /* Hex on purpose: FiveM's CEF build can lag behind modern color syntax. */
+  :root{
+    --text:#ece4d6; --muted:#9a907f;
+    --brass:#d9a441; --danger:#e0563f; --ok:#9ad47a;
+    --display:"Chakra Petch","Segoe UI",system-ui,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+    --ease:cubic-bezier(.16,1,.3,1);
+  }
+  *{box-sizing:border-box;margin:0}
+  html,body{height:100%}
+  body{background:transparent;color:var(--text);font-family:var(--mono);overflow:hidden;user-select:none}
+  body.standalone{background:radial-gradient(1200px 600px at 50% 110%, #2a241b 0%, transparent 60%), #15130f}
+  /* Full-screen overlay that never takes mouse input. The dial is positioned
+     inside #anchor, which the client moves to the meter's screen position. */
+  .stage{position:fixed;inset:0;pointer-events:none;z-index:2}
+
+  /* Zero-size point at the meter's screen position. JS sets its transform. */
+  #anchor{
+    position:absolute;left:0;top:0;width:0;height:0;
+    visibility:hidden;
+  }
+  #anchor.on{visibility:visible}
+
+  /* Thin 10% black cover between the game and the UI. Sits behind #app,
+     never eats mouse input. Fades with the minigame's own show/hide. */
+  .backdrop{
+    position:fixed;inset:0;
+    background:rgba(0,0,0,0.10);
+    pointer-events:none;
+    z-index:1;
+    opacity:0;
+    transition:opacity .3s var(--ease);
+  }
+  .backdrop.show{opacity:1}
+
+  /* Sits centred horizontally on the anchor and its bottom edge rests just
+     above it, so the dial floats over the meter. */
+  #app{
+    display:grid;justify-items:center;gap:18px;
+    opacity:0;transform:translateY(12px) scale(.97);
+    transition:opacity .3s var(--ease),transform .4s var(--ease);
+    position:absolute;left:-100px;bottom:14px;
+    width:200px;
+  }
+  #app.show{opacity:1;transform:none}
+  #app.fade-out{
+    opacity:0;
+    transform:translateY(-8px) scale(.97);
+    transition:opacity .5s var(--ease),transform .5s var(--ease);
+  }
+  body:not(.standalone) #app:not(.show){visibility:hidden}
+
+  .dial{
+    position:relative;width:200px;height:200px;
+    filter: drop-shadow(0 6px 16px rgba(0,0,0,.5)) drop-shadow(0 2px 4px rgba(0,0,0,.35));
+  }
+  .dial svg{width:100%;height:100%;transform:rotate(-90deg);display:block}
+  .ring-bg{fill:none;stroke:#2b2721;stroke-width:10}
+  .ring-fg{fill:none;stroke:var(--brass);stroke-width:10;stroke-linecap:round}
+  .dial.low .ring-fg{stroke:var(--danger)}
+  .dial.hit .ring-fg{stroke:var(--ok)}
+  .num{
+    position:absolute;inset:0;display:grid;place-items:center;
+    font-family:var(--display);font-weight:700;font-size:3.25rem;line-height:1;
+    font-variant-numeric:tabular-nums;letter-spacing:.04em;
+    text-shadow: 0 2px 6px rgba(0,0,0,.55);
+  }
+  .dial.hit .num{color:var(--ok)}
+
+  .picks{
+    display:flex;gap:8px;
+    filter: drop-shadow(0 2px 5px rgba(0,0,0,.45));
+  }
+  .pick{width:26px;height:5px;border-radius:3px;background:var(--brass);transition:opacity .25s,transform .25s var(--ease)}
+  .pick.gone{opacity:.15;transform:scaleX(.5)}
+
+  /* End-of-round message (outside #app so it survives the dial fade) */
+  .end-msg{
+    position:fixed;inset:0;display:grid;place-items:center;
+    font-family:var(--display);font-weight:700;font-size:2.2rem;letter-spacing:.04em;
+    opacity:0;pointer-events:none;
+    transition:opacity .4s var(--ease);
+    z-index:10;
+    text-shadow: 0 3px 12px rgba(0,0,0,.6);
+  }
+  .end-msg.show{opacity:1}
+  .end-msg.ok{color:var(--ok)}
+  .end-msg.bad{color:var(--danger)}
+
+  /* Result text sits centred on the dial. The bottom offset is the dial's
+     centre: 14px #app gap + 5px picks + 18px gap + 100px radius. */
+  #anchor .end-msg{
+    position:absolute;inset:auto;
+    left:-150px;bottom:137px;width:300px;
+    display:block;text-align:center;
+    transform:translateY(50%);
+  }
+
+  /* Step notifications: slide in from the left, stack, then fade out. */
+  #feed{position:fixed;left:16px;top:38%;z-index:20;display:flex;flex-direction:column;gap:8px;pointer-events:none;width:320px}
+  .note{
+    font-family:var(--display);font-size:15px;letter-spacing:.3px;
+    background:rgba(21,19,15,.9);color:var(--text);
+    border-left:4px solid var(--brass);border-radius:6px;
+    padding:10px 14px;box-shadow:0 6px 18px rgba(0,0,0,.45);
+    transform:translateX(-120%);opacity:0;
+    animation:noteIn .35s var(--ease) forwards;
+  }
+  .note.success{border-left-color:var(--ok)}
+  .note.error{border-left-color:var(--danger)}
+  .note.out{animation:noteOut .4s ease forwards}
+  @keyframes noteIn{to{transform:translateX(0);opacity:1}}
+  @keyframes noteOut{to{transform:translateX(-120%);opacity:0}}
+</style>
+</head>
+<body>
+
+<div id="feed" aria-live="polite"></div>
+
+<!-- Thin black cover, sits between the game viewport and the dial UI -->
+<div class="backdrop" id="backdrop"></div>
+
+<div class="stage">
+  <div id="anchor">
+    <section id="app" aria-label="Lockpick minigame">
+      <div class="dial" id="dial">
+        <svg viewBox="0 0 200 200" aria-hidden="true">
+          <circle class="ring-bg" cx="100" cy="100" r="88"></circle>
+          <circle class="ring-fg" id="ringFg" cx="100" cy="100" r="88"></circle>
+        </svg>
+        <div class="num" id="num">E</div>
+      </div>
+
+      <div class="picks" id="picks"></div>
+    </section>
+
+    <!-- End message lives outside #app so it isn't hidden when the dial fades -->
+    <div id="endMsg" class="end-msg">Unlocked</div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const IS_NUI = typeof GetParentResourceName === 'function';
+  const RES = IS_NUI ? GetParentResourceName() : null;
+  if (!IS_NUI) document.body.classList.add('standalone');
+
+  // Any of these can be the prompt. Space removed.
+  const KEYS = [
+    { code:'KeyE', label:'E' },
+    { code:'KeyF', label:'F' },
+    { code:'KeyR', label:'R' },
+    { code:'KeyQ', label:'Q' },
+    { code:'KeyG', label:'G' },
+    { code:'KeyC', label:'C' },
+  ];
+
+  // Fallback rounds if the client doesn't send Config.LockpickRounds.
+  // The real list comes from the NUI 'open' message.
+  let ROUNDS = [
+    { time: 3.0 },
+    { time: 2.8 },
+    { time: 2.6 },
+    { time: 2.4 },
+    { time: 2.2 },
+    { time: 2.0 },
+    { time: 1.8 },
+    { time: 1.6 },
+    { time: 1.4 },
+    { time: 1.2 },
+  ];
+
+  const R = 88;
+  const CIRC = 2 * Math.PI * R;
+
+  const $ = id => document.getElementById(id);
+  const app = $('app'), dial = $('dial'), ringFg = $('ringFg');
+  const numEl = $('num'), picksEl = $('picks'), endMsg = $('endMsg');
+  const backdrop = $('backdrop');
+  const anchor = $('anchor');
+
+  // Moves the dial's anchor to a normalized screen position (0..1 on each axis).
+  function placeAnchor(nx, ny){
+    anchor.style.transform = `translate(${nx * innerWidth}px, ${ny * innerHeight}px)`;
+  }
+
+  let S = null, totalPicks = 3;
+
+  // -------------------------------------------------------------------------
+  // SFX — procedural via Web Audio API (no external files, CEF-safe)
+  // -------------------------------------------------------------------------
+  let audioCtx = null;
+  function ensureAudio(){
+    if (!audioCtx){
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch(e){ audioCtx = null; }
+    }
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    return audioCtx;
+  }
+
+  function beep(freq, dur, type, vol, when){
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    const t = when || ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type || 'sine';
+    osc.frequency.setValueAtTime(freq, t);
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(vol || 0.06, t + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + dur + 0.02);
+  }
+
+  function sfxTick(){ beep(1150, 0.035, 'square', 0.025); }
+  function sfxHit(){
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    beep(880, 0.07, 'sine', 0.08);
+    beep(1320, 0.14, 'sine', 0.07, ctx.currentTime + 0.05);
+  }
+  function sfxMiss(){
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    beep(170, 0.16, 'sawtooth', 0.09);
+    beep(110, 0.22, 'square', 0.055, ctx.currentTime + 0.02);
+  }
+  function sfxUnlock(){
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    const t0 = ctx.currentTime;
+    [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => {
+      beep(f, 0.32, 'sine', 0.09, t0 + i * 0.085);
+    });
+  }
+  function sfxLockFail(){
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    const t0 = ctx.currentTime;
+    [392, 311.13, 233.08].forEach((f, i) => {
+      beep(f, 0.28, 'triangle', 0.09, t0 + i * 0.11);
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // helpers
+  // -------------------------------------------------------------------------
+  function hideEndMsg(){ endMsg.classList.remove('show', 'ok', 'bad'); }
+  function showBackdrop(){ backdrop.classList.add('show'); }
+  function hideBackdrop(){ backdrop.classList.remove('show'); }
+
+  function close(){
+    app.classList.remove('show', 'fade-out');
+    hideEndMsg();
+    hideBackdrop();
+    S = null;
+  }
+
+  function paintRing(frac){
+    ringFg.style.strokeDasharray = (CIRC * frac) + ' ' + CIRC;
+  }
+
+  function renderPicks(){
+    const left = S ? S.picks : totalPicks;
+    picksEl.innerHTML = Array.from({ length: totalPicks }, (_, i) =>
+      `<span class="pick ${i >= left ? 'gone' : ''}"></span>`).join('');
+  }
+
+  // -------------------------------------------------------------------------
+  // game
+  // -------------------------------------------------------------------------
+  function newGame(picks){
+    totalPicks = picks || 3;
+    const first = ROUNDS[0] || { time: 3.0 };
+    S = {
+      round:0, picks:totalPicks,
+      duration:first.time, time:first.time,
+      key:null, running:true, lastTickSec:null
+    };
+    app.classList.remove('fade-out');
+    hideEndMsg();
+    showBackdrop();
+    renderPicks();
+    setRound(0);
+  }
+
+  function setRound(i){
+    if (!S) return;
+    S.round = Math.min(i, ROUNDS.length - 1);
+    const r = ROUNDS[S.round] || { time: 2.0 };
+    S.duration = r.time;
+    S.time = r.time;
+    S.lastTickSec = Math.ceil(S.time);
+    S.key = KEYS[Math.floor(Math.random() * KEYS.length)];
+    numEl.textContent = S.key.label;
+    dial.classList.remove('low', 'hit');
+    paintRing(1);
+  }
+
+  function press(code){
+    if (!S || !S.running) return;
+
+    if (code !== S.key.code) return fail();
+
+    S.running = false;
+    dial.classList.add('hit');
+    paintRing(1);
+    sfxHit();
+
+    setTimeout(() => {
+      if (!S) return;
+      dial.classList.remove('hit');
+      const next = S.round + 1;
+      if (next >= ROUNDS.length) return finish(true);
+      S.running = true;
+      setRound(next);
+    }, 180);
+  }
+
+  function fail(){
+    if (!S) return;
+    S.picks--;
+    renderPicks();
+    dial.classList.add('low');
+    sfxMiss();
+
+    if (S.picks <= 0) return finish(false);
+
+    S.running = false;
+    setTimeout(() => {
+      if (!S) return;
+      S.running = true;
+      setRound(S.round);
+    }, 260);
+  }
+
+  // -------------------------------------------------------------------------
+  // finish — success and failure share the same fade-out → message → fade → close
+  // -------------------------------------------------------------------------
+  function finish(success, cancelled){
+    if (!S) return;
+    S.running = false;
+    paintRing(0);
+
+    const picksLeft = S.picks;
+
+    if (success) sfxUnlock();
+    else sfxLockFail();
+
+    // 1) Fade the dial and backdrop away
+    app.classList.add('fade-out');
+    hideBackdrop();
+
+    // 2) Fade in the end message
+    endMsg.textContent = success ? 'Unlocked' : 'Lock Failed';
+    endMsg.classList.remove('ok', 'bad');
+    endMsg.classList.add(success ? 'ok' : 'bad');
+    endMsg.classList.add('show');
+
+    // 3) Hold, fade out, then close
+    setTimeout(() => {
+      endMsg.classList.remove('show');
+
+      setTimeout(() => {
+        if (IS_NUI) {
+          fetch(`https://${RES}/result`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ success, cancelled: !!cancelled, picksLeft })
+          }).catch(() => {});
+          close();
+        } else {
+          // Standalone: reset for another run
+          close();
+          app.classList.add('show');
+          newGame(3);
+        }
+      }, 450);
+    }, 1200);
+  }
+
+  // -------------------------------------------------------------------------
+  // loop
+  // -------------------------------------------------------------------------
+  let last = 0;
+  function loop(ts){
+    const dt = Math.min(.05, (ts - last) / 1000 || 0);
+    last = ts;
+    if (S && S.running) update(dt);
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  function update(dt){
+    S.time -= dt;
+
+    if (S.time <= 0){
+      S.time = 0;
+      paintRing(0);
+      return fail();
+    }
+
+    const sec = Math.ceil(S.time);
+    if (sec !== S.lastTickSec){
+      S.lastTickSec = sec;
+      sfxTick();
+    }
+
+    const frac = S.time / S.duration;
+    paintRing(frac);
+    dial.classList.toggle('low', frac <= .34);
+  }
+
+  // -------------------------------------------------------------------------
+  // input
+  // -------------------------------------------------------------------------
+  addEventListener('keydown', e => {
+    ensureAudio();
+
+    if (e.code === 'Space') e.preventDefault();
+
+    if (!S || !S.running){
+      if (e.code === 'Enter' && !IS_NUI && endMsg.classList.contains('show')) newGame(3);
+      return;
+    }
+    if (e.repeat) return;
+
+    if (e.code === 'Escape' || e.code === 'Backspace')
+      return finish(false, true);
+
+    if (KEYS.some(k => k.code === e.code)) press(e.code);
+  });
+
+  // -------------------------------------------------------------------------
+  // NUI bridge
+  // -------------------------------------------------------------------------
+  addEventListener('message', ({ data }) => {
+    if (!data || !data.action) return;
+
+    if (data.action === 'open'){
+      // Config-driven rounds. Client sends Config.LockpickRounds; if it's
+      // missing or empty we keep the built-in fallback above.
+      if (Array.isArray(data.rounds) && data.rounds.length > 0){
+        ROUNDS = data.rounds.map(r => ({ time: Number(r.time) || 2.0 }));
+      }
+      ensureAudio();
+      app.classList.add('show');
+      newGame(data.picks || 3);
+    }
+    // Client sends the meter's screen position every frame it changes.
+    if (data.action === 'pos'){
+      if (data.visible){
+        placeAnchor(Number(data.x) || 0, Number(data.y) || 0);
+        anchor.classList.add('on');
+      } else {
+        anchor.classList.remove('on');
+      }
+    }
+    if (data.action === 'close'){ close(); }
+    if (data.action === 'feed'){ notify(data.text, data.kind); }
+  });
+
+  // Step notification: slides in from the left, stays a few seconds, fades out.
+  const feed = $('feed');
+  function notify(text, kind){
+    if (!text) return;
+    while (feed.children.length >= 5) feed.firstChild.remove();
+    const el = document.createElement('div');
+    el.className = 'note ' + (kind === 'success' || kind === 'error' ? kind : '');
+    el.textContent = String(text);
+    feed.appendChild(el);
+    setTimeout(() => {
+      el.classList.add('out');
+      setTimeout(() => el.remove(), 450);
+    }, 3800);
+  }
+
+  renderPicks();
+  if (!IS_NUI){
+    // Browser preview: no game to follow, so park the dial mid-screen.
+    placeAnchor(0.5, 0.6);
+    anchor.classList.add('on');
+    app.classList.add('show');
+    newGame(3);
+  }
+})();
+</script>
+</body>
+</html>
