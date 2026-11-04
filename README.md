@@ -49,8 +49,3 @@ local cooldowns = exports['BPCrime']:GetMeterCooldowns()
 -- Clears the cooldown on a specific meter, returns true if one existed
 local cleared = exports['BPCrime']:ClearMeterCooldown(key)
 ```
-
-
-## License
-
-Add your license here (e.g. MIT).
