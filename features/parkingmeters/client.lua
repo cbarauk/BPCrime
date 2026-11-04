@@ -1,5 +1,5 @@
 --[[
-    BPCrime - parking meters - client.lua
+    BPCrime - client.lua
 
     Minigame: the Tumbler lockpick (NUI, html/index.html). The player stays
     frozen and plays the lockpick anim while the dial runs. The client only

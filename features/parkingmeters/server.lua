@@ -1,5 +1,5 @@
 --[[
-    BPCrime - parking meters - server.lua
+    BPCrime - server.lua
     All payouts, cooldowns, lockpick usage and validation happen here. Client is never trusted.
 ]]
 
